@@ -1,0 +1,188 @@
+---
+title: "2_Get_BLUPs"
+author: "massaine"
+date: "2022-06-29"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+## Introduction
+# Preliminary field trial analysis
+```{r}
+library(gt)
+library(genomicMateSelectR)
+library(plyr)
+library(ggplot2)
+
+phenos<-readRDS(here::here("output","phenotypes_cleaned.rds"))
+
+phenosPod <- read.table("Dados_podridao_2018_2021.txt", header=T, sep="\t", na.strings="NA", strip.white=TRUE, check.names=FALSE)
+phenos <- full_join(phenos, phenosPod, "observationUnitName")  
+phenos <- phenos[!is.na(phenos$studyYear),]
+```
+
+##The pipeline version of this analysis will use the TRUE/FALSE values of CompleteBlocks and IncompleteBlocks (Preliminary analysis of trial data )
+```{r}
+phenos %>% 
+     dplyr::count(CompleteBlocks,IncompleteBlocks,locationName) %>% 
+     spread(locationName,n)
+```
+
+## Convert the data to “long format” . Remove missing values. “Nest” the data by Trait.
+```{r}
+phenos$Podridao.y <- NULL
+phenos$Podridao.x <- as.numeric(phenos$Podridao.x)
+traits<-c("DMCg","logFSY","logFRY","StC","PA","Podridao.x")
+phenos<-phenos %>% 
+     # Convert the data to "long format" 
+     pivot_longer(cols = all_of(traits), 
+                  names_to = "Trait", values_to = "Value") %>%
+     # Remove missing values
+     filter(!is.na(Value)) %>%
+     filter(Value != -Inf) %>%
+     # Nest the MultiEnvironmentTrial data by trait
+     nest(METdata=c(-Trait))
+phenos %>% 
+     mutate(N_plots=map_dbl(METdata,nrow))
+```
+
+###vWhere previously there was one row per plot and a large number of columns, now things are simple ###and tidy.
+
+###One row per trait. The actual plot-basis data are now contained within METdata, a list-type column, 
+###each element containing a tibble.
+
+###To demonstrate, check the contents of row 1 of the METdata column and removing trials:
+```{r}
+phenos$METdata[[1]] %>% head %>% rmarkdown::paged_table()
+phenos$METdata[[1]] <- phenos$METdata[[1]] %>% filter(studyName!="BR.CET.20.CNPMF",studyName!="BR.BAG2.PT.13.PP1") 
+phenos$METdata[[2]] <- phenos$METdata[[2]] %>% filter(studyName!="BR.BAG2.PT.13.PP1") 
+phenos$METdata[[3]] <- phenos$METdata[[3]] %>% filter(studyName!="BR.BAG2.PT.13.PP1",studyName!="BR.BAG3.PT.13.EA2") 
+phenos$METdata[[5]] <- phenos$METdata[[5]] %>% filter(studyName!="BR.BAG1.18.UFRB") 
+phenos
+
+### remover BR.BAG2.PT.15.NR da analise de doencas
+
+```
+
+# Comparison of models
+```{r}
+# grab just one chunk of the data to "experiment" on
+METdata<-phenos$METdata[[1]] %>% 
+     # sommer doesn't recognize logical T/F variables
+     mutate(CompleteBlocks=as.character(CompleteBlocks), 
+            IncompleteBlocks=as.character(IncompleteBlocks))
+```
+
+## Fit models
+### The following code block implements 4 different models, each will execute in the background and at the same time.
+
+## Vamos usar o modelo simple_het_error_model
+## Nao faremos a comparacao de modelos
+```{r}
+#library(future)
+library(sommer)
+#plan(sequential)
+RhpcBLASctl::blas_set_num_threads(3)
+RhpcBLASctl::omp_set_num_threads(3)
+# the model I've applied to NextGen predictions the last several years
+# conv_model <- mmer(Value~yearInLoc,
+#                  random=~germplasmName + 
+#                       vs(at(CompleteBlocks,"TRUE"),repInTrial) + 
+#                       vs(at(IncompleteBlocks,"TRUE"),blockInRep),
+#                  data=METdata,
+#                  verbose = FALSE)
+# # add heterogeneous-error variance for each trial (studyName)
+# conv_het_error_model <- mmer(Value~yearInLoc,
+#                                  random=~germplasmName + 
+#                                       vs(at(CompleteBlocks,"TRUE"),repInTrial) + 
+#                                       vs(at(IncompleteBlocks,"TRUE"),blockInRep),
+#                                  rcov=~vs(ds(studyName),units),
+#                                  data=METdata, 
+#                                  verbose = FALSE)
+# # simplify: no het. error, no at() variance structure
+# simple_model <- mmer(Value~yearInLoc,
+#                          random=~germplasmName + repInTrial + blockInRep,
+#                          data=METdata, 
+#                          verbose = FALSE)
+# no at() variance structure, include het. error variance by trial
+simple_het_error_model <- mmer(Value~yearInLoc,
+                                   random=~germplasmName + repInTrial + blockInRep,
+                                   rcov=~vs(ds(studyName),units),
+                                   data=METdata, 
+                                   verbose = FALSE)
+```
+
+```{r}
+# Save output of above so the above models don't need to be re-run
+## if and when I reformat or otherwise re-knit this doc to HTML
+
+#save(conv_model,conv_het_error_model,simple_model,simple_het_error_model, file=here::here("output","models_compared.Rdata"))
+```
+
+# Model comparisons
+```{r}
+# load the output from the models from where I stored it
+#load(here::here("output","models_compared.Rdata"))
+```
+
+```{r}
+#anova(conv_model,conv_het_error_model)
+```
+
+### Here’s a very not-pretty not-high-throughput way to set-up a table comparing the AIC for all 4 models.
+```{r}
+#tibble(Model=c("conv_model","conv_het_error_model","simple_model","simple_het_error_model"),
+#       AIC=c(conv_model$AIC,conv_het_error_model$AIC,simple_model$AIC,simple_het_error_model$AIC)) %>% 
+#     arrange(AIC) %>% gt::gt()
+```
+
+# Analyze all traits
+```{r}
+phenos
+```
+
+We will write a function that will take each data chunk (tibbles stored in phenos$METdata) as an input argument.
+We’ll execute the function (and thus the analysis) simultaneously (in parallel) across the data chunks using the furrr package.
+
+## Test code for function
+# Note that in this case, the only actual difference among traits in our example is going to be an added fixed effect for the yield traits, the PropNOHAV.
+
+### Outlier Detection and Removal: My standard pipeline includes outlier detection and removal. (1) Fit the model. (2) Define outliers as observations where the absolute-value of the standardized residuals >3.3. (3) Remove outliers and re-fit the model. (4) Check for and remove residuals again. (5) If more residuals were detected and removed, re-fit a final time.
+
+###Next we extract and format the outputs we want from the mixed-model; these will be combined into a list and passed to the return() statement of the function we are building. In the chunk below, I extract and compute a number of things: Model fit stats like AIC, log likelihood and the number of grouping factors, mostly stored for posterity; Variance component estimates; A broad-sense heritability value H2; Extract BLUPs and corresponding PEVs (prediction error variance) for the genotype-factor (“germplasmName”); Compute: 1-reliabilities (REL) for each BLUP, 2-de-regressed BLUPs (drgBLUP), 3-Weighting factor (WT) for each BLUP, to be used in downstream analyses where the drgBLUP is supplied as the response variable.
+
+##Run the full analysis
+
+```{r}
+source(here::here("code","get_blups.R"))
+phenos %<>% 
+     mutate(fixedFormula= "Value ~ yearInLoc",
+            randFormula="~germplasmName + repInTrial + blockInRep",
+            rcovFormula="~vs(ds(studyName),units)")
+```
+
+```{r}
+#save(phenos, file = here::here("output","TP_GetBLUPs.RData"))   # Nessa etapa passo os dados para Luciano rodar pelo asreml
+
+fixedformula <- c("Value ~ yearInLoc")
+randformula <- c("~idv(GID) + idv(trialInLocYr) + at(CompleteBlocks,'Yes'):repInTrial + at(IncompleteBlocks,'Yes'):blockInRep")
+
+phenos %<>%  mutate(fixedFormula = fixedformula,
+                    randFormula = randformula)
+phenos$rcovFormula <- NULL
+
+for(i in 1:nrow(phenos)){
+phenos$METdata[[i]] %<>% rename(GID = germplasmName)
+
+phenos$METdata[[i]] %<>% mutate(CompleteBlocks = ifelse(CompleteBlocks == TRUE, "Yes", "No"),
+                                IncompleteBlocks = ifelse(IncompleteBlocks == TRUE, "Yes", "No"))
+}
+
+phenos <- rbind(phenos, phenos[c(1,4,5),])
+
+for(i in 6:nrow(phenos)){
+phenos$randFormula[[i]] <- c("~idv(GID) + idv(trialInLocYr)")
+}
+save(phenos, file = here::here("output", "DRGBlupsGS.RData"))
+```
