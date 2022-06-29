@@ -1,0 +1,194 @@
+---
+title: "5_GenomicSelection"
+author: "massaine"
+date: "2022-06-29"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+## Getting started
+
+```{r}
+library(genomicMateSelectR)
+
+blups<-readRDS(here::here("output","DRGBlupsGS.rds"))
+blups %>% dplyr::select(Trait, fitAS) %>% unnest(fitAS)
+blups <- blups[-c(4,6,8),]
+
+blups1<-readRDS(here::here("output","DRGBlupsDisGS.rds"))
+blups1 %>% dplyr::select(Trait, fitAS) %>% unnest(fitAS)
+blups <- rbind(blups,blups1)
+
+for (i in 1:nrow(blups)) {
+blups$fitAS[[i]]$blups[[1]] <- blups$fitAS[[i]]$blups[[1]] %>% dplyr::rename(germplasmName = GID)
+  }
+
+
+```
+
+## Kinship matrix GBS DART
+```{r}
+A<-readRDS(file=here::here("output","GAddmatrixGBSandDArTGS.rds"))  ## GBS DART
+#A<-readRDS(file=here::here("output","GAddmatrixDArTGS.rds"))  ## GBS DART
+
+A[1:5,1:5]
+dim(A)
+hist(A[lower.tri(A)], main='Off-diagonal values (lower-triangle) of the kinship matrix')
+hist(diag(A), main='Diagonals of the kinship', breaks=20)
+
+```
+
+
+```{r}
+blups %<>% dplyr::select(Trait,fitAS) %>% unnest(fitAS) %>% dplyr::select(Trait,blups) %>% 
+     # need to rename the "blups" list to comply with the runCrossVal function
+     dplyr::rename(TrainingData=blups) %>% 
+     dplyr::select(Trait,TrainingData) %>% 
+     # need also to remove phenotyped-but-not-genotyped lines
+     # couldn't hurt to also subset the kinship to only phenotyped lines... would save RAM
+     dplyr::mutate(TrainingData=map(TrainingData,
+                             ~filter(.,germplasmName %in% rownames(A)) %>% 
+                                  # rename the germplasmName column to GID
+                                  dplyr::rename(GID=germplasmName)))
+for(i in 1:nrow(blups)){
+blups$TrainingData[[i]] <- blups$TrainingData[[i]][order(blups$TrainingData[[i]]$GID),]
+}
+blups
+```
+
+```{r}
+# For fastest, lightest compute of accuracy, remove non-phenotyped from kinship
+gids<-blups %>% unnest(TrainingData) %$% unique(GID)
+A<-A[gids,gids]
+A <- A[order(rownames(A)),order(rownames(A))]
+dim(A)
+A2 <- A[(rownames(A) %in% blups$TrainingData[[6]]$GID),(rownames(A) %in% blups$TrainingData[[6]]$GID)]
+
+#save(A,A2,blups,file="Blups_Kinship_Alltraits.RData")
+```
+
+## Selection index (Verificar pesos)
+```{r}
+# I chose to remove MCMDS 
+## our preliminary analysis showed it to have ~0 heritability in this dataset
+## initial test of cross-val. showed the models do not fit
+SIwts<-c(DMCg=15,
+         logFRY=20,
+         logFSY=20)
+SIwts
+```
+
+# Execute cross-validation
+```{r}
+starttime<-proc.time()[3]
+standardCV2<-runCrossVal(blups=blups %>% tail(n=4),
+                        modelType="A",
+                        selInd=F,
+                        grms=list(A=A2),
+                        nrepeats=2,nfolds=5,
+                        gid="GID",seed=424242,
+                        ncores=2)
+```
+
+## Save the results
+```{r}
+saveRDS(standardCV,file = here::here("output","standardCV_DARTxGBS.rds"))  ## GBSXDART
+#saveRDS(standardCV,file = here::here("output","standardCV_DART.rds"))  ## DART
+
+```
+
+## plot results
+```{r}
+library(ggplot2)
+standardCV2 %>% 
+     unnest(accuracyEstOut) %>% 
+     dplyr::select(repeats,id,predOf,Trait,Accuracy) %>% 
+  mutate(Trait = factor(Trait, levels = c("DMCg", "logFSY", "logFRY", "PA",
+                                          "StC", "Anthractnose", "ManchaBranca",
+                                          "ManchaParda", "QueimaFolhas"))) %>% 
+     ggplot(.,aes(x=Trait,y=Accuracy,fill=Trait)) + 
+     geom_boxplot() + theme_bw()
+```
+
+
+### Set-up for the predictions
+
+```{r}
+blups<-readRDS(here::here("output","DRGBlupsGS.rds"))
+blups %>% dplyr::select(Trait, fitAS) %>% unnest(fitAS)
+blups <- blups[-c(4,6,8),]
+
+blups1<-readRDS(here::here("output","DRGBlupsDisGS.rds"))
+blups1 %>% dplyr::select(Trait, fitAS) %>% unnest(fitAS)
+blups <- rbind(blups,blups1)
+
+for (i in 1:nrow(blups)) {
+blups$fitAS[[i]]$blups[[1]] <- blups$fitAS[[i]]$blups[[1]] %>% dplyr::rename(germplasmName = GID)
+  }
+
+
+
+A<-readRDS(file=here::here("output","GAddmatrixGBSandDArTGS.rds"))
+```
+
+```{r}
+blups %<>% dplyr::select(Trait,fitAS) %>% unnest(fitAS) %>% dplyr::select(Trait,blups) %>% 
+     # need to rename the "blups" list to comply with the runCrossVal function
+     dplyr::rename(TrainingData=blups) %>% 
+     dplyr::select(Trait,TrainingData) %>% 
+     # need also to remove phenotyped-but-not-genotyped lines
+     # couldn't hurt to also subset the kinship to only phenotyped lines... would save RAM
+     dplyr::mutate(TrainingData=map(TrainingData,
+                             ~filter(.,germplasmName %in% rownames(A)) %>% 
+                                  # rename the germplasmName column to GID
+                                  dplyr::rename(GID=germplasmName)))
+blups
+```
+
+##Run genomic predictions
+```{r}
+gpreds<-runGenomicPredictions(modelType="A",
+                              selInd=F,
+                              blups=blups,
+                              grms=list(A=A),
+                              ncores=2)
+```
+
+## Extract GEBV
+
+##We have a single-row tibble.
+##To access a simple table listing GEBV for each trait and the selection index:
+```{r}
+gpreds
+gpreds$gblups[[1]]
+```
+
+##At this point, you can use the SELIND predictions directly to rank and select parents.
+##Example: sort by SELIND and pick the top 10…
+```{r}
+gpreds$gblups[[1]] %>% 
+     arrange(desc(DMCg)) %>% 
+     slice(1:10)
+library(data.table)
+GEBVs_GS <- gpreds$gblups[[1]] %>% filter(GID %like% "BR-21GS")
+
+write.table(GEBVs_GS,file = here::here("output","Clones_21GS-C3_GEBVs_2022.csv"),sep=",",quote = FALSE)
+write.table(gpreds$gblups[[1]],file = here::here("output","All_Clones_GEBVs_2022.csv"),sep=",",quote = FALSE)
+
+Clone_21GS-C3_GEBVs_2022
+```
+
+##For more detailed output, including variance component estimates:
+```{r}
+gpreds$genomicPredOut[[1]]
+```
+
+```{r}
+gpreds$genomicPredOut[[1]]$varcomps[[1]]
+```
+
+```{r}
+saveRDS(gpreds,file = here::here("output","genomicPredictions.rds"))
+```
+

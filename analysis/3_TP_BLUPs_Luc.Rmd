@@ -1,0 +1,66 @@
+---
+title: "3_TP_BLUPs_Luc"
+author: "massaine"
+date: "2022-06-29"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+## Introduction
+
+```{r}
+library(here)
+library(furrr)
+library(tidyverse)
+source(here::here("code", "MixedModelsFunctions.R"))
+DataSelPar$locationName
+DataSelPar <- readRDS(here::here("data", "DadosFenSel.rds")) %>%
+  mutate(trial = as.character(trial),
+         rep = as.character(rep),
+         Ano = studyYear,
+         Local = locationName,
+         repTrial = as.factor(paste(trial, rep, sep = ":")),
+         LocYear = as.factor(paste(Local, Ano, sep = ":")))
+NCT <- 1
+
+plan(sequential)
+RhpcBLASctl::blas_set_num_threads(NCT)
+
+traits <- table(DataSelPar$Trait) %>% .[order(.)] %>% names
+i = "logFRY"
+as.factor(DataSelPar$trial)
+
+for(i in traits){
+  print(paste("Trait", i, sep = " "))
+  DataMM <- DataSelPar%>% filter(Trait == i)
+  MM <- analyzeTrial.lme4Conjed(DataMM)
+  blups <- MM$U$clone$y + MM$Beta$Estimate
+  Blups <- tibble(id = names(blups),
+                  blups = blups) %>%
+    dplyr::mutate(id = gsub(pattern = "clone", replacement = "",x = .$id))
+  colnames(Blups)[2] <- i
+  file <- here::here("output", "MixedModels",
+                     paste("Blups_", i, ".rds", sep = ""))
+  saveRDS(object = Blups, file = file)
+  rm(DataMM); rm(MM); rm(blups); rm(Blups); rm(file)
+}
+
+
+BlupsTraits <- readRDS(here::here("output", "MixedModels", "Blups_HCNPic.rds"))
+IDClones <- tibble(id = unique(c(DataSelPar$clone, DataSelHCN$clone)) %>% .[order(.)])
+BlupsTraits <- IDClones %>% left_join(BlupsTraits, by = "id")
+
+for(i in traits){
+  filename <- paste("Blups_", i, ".rds", sep = "")
+  BlupsTraits <- BlupsTraits %>%
+    left_join(readRDS(here::here("output", "MixedModels", filename)))
+  colnames(BlupsTraits)[colnames(BlupsTraits) == "blups"] <- i
+}
+
+saveRDS(object = BlupsTraits,
+        file = here::here("output", "BlupsFenCar.rds"))
+
+```
+
+

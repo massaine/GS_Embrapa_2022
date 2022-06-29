@@ -1,0 +1,101 @@
+---
+title: "4_RemovingTrials"
+author: "massaine"
+date: "2022-06-29"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+## Ajuste dos dados fenotípicos para rodar a análise de modelos mistos
+
+```{r Ajuste dos dados fenotipicos}
+suppressWarnings(suppressMessages(library(tidyverse)))
+library(reshape2); library(here)
+
+phenosPod <- read.table("Dados_podridao_2018_2021.txt", header=T, sep="\t", na.strings="NA", strip.white=TRUE, check.names=FALSE)
+phenos<-readRDS(here::here("output","phenotypes_cleaned.rds"))
+head(phenosPod)
+phenos1 <- full_join(phenos, phenosPod, "observationUnitName")  
+phenos1 <- phenos1[!is.na(phenos1$studyYear),]
+DadosPar <- phenos1[,c(1,3:5,11:28,31, 34:38, 45:46)]
+DadosParFin <- DadosPar %>% reshape2::melt(data = ., id.vars = c(1:22),
+                                           variable.name = "Trait", value.name = "Value") %>%
+  filter(!is.na(Value)) %>%
+  dplyr::mutate(trial = studyName,
+                #studyDesign = studyDesign,
+                clone = germplasmName,
+                rep = blockNumber,
+                entryType = ifelse(entryType == "check", germplasmName, "999"),
+                entryType = ifelse(germplasmName %in% unique(entryType), germplasmName, "999"),
+                new = ifelse(entryType != "999", 0, 1),
+                y = Value, .keep = "unused")
+
+saveRDS(DadosParFin, file = here::here("output", "DadosParFin.rds"))
+
+
+```
+
+## Selecionar os ensaios utilizando Herdabilidade e R2 estimados funções de Modelos mistos
+```{r}
+suppressWarnings(suppressMessages(library(tidyverse)))
+library(MuMIn)
+library(reshape2); library(here)
+
+suppressMessages(source(here::here("code", "MixedModelsFunctions.R")))
+
+DadosParFin <- readRDS(file = here::here("output", "DadosParFin.RDS"))
+
+Trials <- unique(DadosParFin$trial)
+Results <- tibble()
+
+for(i in Trials){
+  traits <- DadosParFin %>% filter(trial %in% i) %>% .$Trait %>% unique %>% as.character
+  results <- tibble()
+
+  for(j in traits) {
+  try(MixedModels <- analyzeTrial.lme4(DadosParFin %>% filter(trial %in% i & Trait %in% j)))
+  try(result <- tibble(Trial = i,
+                       Trait = j,
+                       NClones = nrow(unique(DadosParFin %>%
+                                                 filter(trial %in% i & Trait %in% j) %>% 
+                                                 dplyr::select(clone))),
+                       VarG = as.data.frame(VarCorr(MixedModels))[,c("grp","vcov")] %>% .[1,2],
+                       VarE = as.data.frame(VarCorr(MixedModels))[,c("grp","vcov")] %>% .[2,2],
+                       H2 = VarG/(VarG + VarE),
+                       Real = suppressWarnings(MuMIn::r.squaredGLMM(MixedModels)[2])))
+  try(results <- rbind(results, result))
+  rm(MixedModels); rm(result)
+  }
+  
+  Results <- rbind(Results, results)
+  rm(traits); rm(results)
+}
+
+```
+
+
+```{r}
+TrialsList <- unique(DadosParFin[,c("studyYear","trial")])
+
+Results2 <- Results %>% dplyr::right_join(TrialsList, by = c("Trial" = "trial")) %>%
+  dplyr::select(Trial, everything()) %>% dplyr::mutate(Selecionado = ifelse(Real > 0.25 & H2 > 0.15, "Sim", "Nao"))
+
+
+DataSelPar <- DadosParFin %>% mutate(Trait.Trial = paste(Trait, trial, sep = ".")) %>%
+  .[.$Trait.Trial %in% (Results2 %>% mutate(Trait.Trial = paste(Trait, Trial, sep = ".")) %>%
+                        filter(Selecionado == "Sim") %>% .$Trait.Trial),]
+
+saveRDS(object = DataSelPar, file = here::here("data", "DadosFenSel.rds"))
+```
+
+### ## remover trials
+
+BR.BAG5.PT.15.Citrus (3 traits)
+BR.CET.20.CNPMF     (DMCg = H 0.04)
+BR.BAG2.PT.13.PP1 (DMCg = H 0.22)  
+BR.BAG2.PT.13.PP1  	FRY and FSY
+BR.BAG3.PT.13.EA2   FRY
+
+BR.BAG1.18.UFRB   PA
+
