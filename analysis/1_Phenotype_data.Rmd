@@ -1,0 +1,246 @@
+---
+title: "1_Phenotype_data"
+author: "massaine"
+date: "2022-06-29"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+## Introduction
+```{r}
+library(gt)
+library(genomicMateSelectR)
+library(plyr)
+library(ggplot2)
+
+dbdata<-readDBdata(phenotypeFile = here::here("data","phenotype.csv"),
+                   metadataFile = here::here("data","metadata.csv"))
+```
+
+```{r}
+dbdata %>% dplyr::count(observationLevel)
+dbdata %>% 
+     dplyr::count(studyName,trialType, studyDesign, numberBlocks,numberReps,entryType) %>% 
+     spread(entryType,n) %>% 
+     gt()  %>% 
+     tab_options(table.font.size = pct(75))
+```
+
+## check if the replicate and blockNumber columns reliably distinguish complete and incomplete blocks in the data.
+```{r}
+dbdata %>% 
+     group_by(studyName) %>% 
+     dplyr::summarize(N_replicate=length(unique(replicate)),
+               N_blockNumber=length(unique(blockNumber))) %>% 
+     gt() %>% tab_options(table.font.size = pct(75))
+```
+
+## The question is, are complete replications of the experiment indicated by replicate and incomplete sub-blocks represented by blockNumber
+```{r}
+dbdata %>% 
+     group_by(studyName) %>% 
+     dplyr::summarize(N_replicate=length(unique(replicate)),
+               N_blockNumber=length(unique(blockNumber)),
+               doRepsEqualBlocks=all(replicate==blockNumber)) %>% 
+     gt() %>% tab_options(table.font.size = pct(75))
+```
+
+## to check that the replicate column definitely means complete blocks. If the numbers
+## are very similar for all trials, indicating complete blocks.
+```{r}
+# the overall number of accessions per trial
+dbdata %>% 
+     group_by(studyName) %>% 
+     dplyr::summarize(N_accession=length(unique(germplasmName))) %>% 
+     # the average number of accessions per replicate per trial
+     left_join(dbdata %>% 
+                    group_by(studyName,replicate) %>% 
+                    dplyr::summarize(N_accession=length(unique(germplasmName))) %>% 
+                    group_by(studyName) %>% 
+                    dplyr::summarize(avgAccessionsPerReplicate=ceiling(mean(N_accession)))) %>% 
+     gt() %>% tab_options(table.font.size = pct(75))
+```
+
+## One more: look at the min, mean and max number of accessions per blockNumber
+```{r}
+# the overall number of accessions per trial
+dbdata %>% 
+     group_by(studyName) %>% 
+     dplyr::summarize(N_accession=length(unique(germplasmName))) %>% 
+     left_join(dbdata %>% 
+     group_by(studyName,replicate,blockNumber) %>% 
+     dplyr::summarize(N_accession=length(unique(germplasmName))) %>% ungroup() %>% 
+     group_by(studyName) %>% 
+     dplyr::summarize(minAccessionsPerBlock=ceiling(min(N_accession)),
+               avgAccessionsPerBlock=ceiling(mean(N_accession)),
+               maxAccessionsPerBlock=ceiling(max(N_accession)))) %>% 
+     gt() %>% tab_options(table.font.size = pct(60))
+```
+
+## to create explicitly nested design variables (yearInLoc, trialInLocYr, repInTrial, blockInRep).
+```{r}
+dbdata %<>% 
+     group_by(studyName) %>% 
+     dplyr::summarize(N_replicate=length(unique(replicate)),
+               N_blockNumber=length(unique(blockNumber)),
+               doRepsEqualBlocks=all(replicate==blockNumber)) %>% 
+     ungroup() %>% 
+     mutate(CompleteBlocks=ifelse(N_replicate>1,TRUE,FALSE),
+            IncompleteBlocks=ifelse(N_blockNumber>1 & !doRepsEqualBlocks,TRUE,FALSE)) %>% 
+     left_join(dbdata) %>% 
+     mutate(yearInLoc=paste0(programName,"_",locationName,"_",studyYear),
+            trialInLocYr=paste0(yearInLoc,"_",studyName),
+            repInTrial=paste0(trialInLocYr,"_",replicate),
+            blockInRep=paste0(repInTrial,"_",blockNumber))
+```
+
+
+```{r}
+dbdata %>% 
+     dplyr::count(studyName,CompleteBlocks,IncompleteBlocks) %>% 
+     left_join(dbdata %>% 
+                    group_by(studyName) %>% 
+                    dplyr::summarize(nRepInTrial=length(unique(repInTrial)),
+                              nBlockInRep=length(unique(blockInRep)))) %>% 
+     gt() %>% tab_options(table.font.size = pct(67))
+```
+
+## Rename traits
+```{r}
+traitabbrevs<-tribble(~TraitAbbrev,~TraitName,
+        "FSW","fresh.shoot.weight.measurement.in.kg.per.plot.CO_334.0000016",
+        "FRW","fresh.storage.root.weight.per.plot.CO_334.0000012",        
+        "DMCg","dry.matter.content.by.specific.gravity.method.CO_334.0000160",
+        "DMCo","dry.matter.content.percentage.CO_334.0000092",
+        "NOHAV","plant.stands.harvested.counting.CO_334.0000010",
+        "CWLSD","cassava.white.leaf.spot.disease.severity.by.visual.rating.1.5.CO_334.0002116",
+        "CBroLS","cassava.brown.leaf.spot.disease.severity.by.visual.rating.1.5.CO_334.0002118",
+        "CBliLS","cassava.blight.leaf.spot.disease.severity.by.visual.rating.1.5.CO_334.0002120",
+        "StC","starch.content.percentage.CO_334.0000071",
+        "PA","plant.architecture.visual.rating.1.5.CO_334.0000099")
+
+traitabbrevs %>% gt()#rmarkdown::paged_table()
+```
+
+## selecting columns from dldata
+```{r}
+dbdata<-renameAndSelectCols(traitabbrevs,
+                            indata=dbdata,
+                            customColsToKeep = c("observationUnitName",
+                                                 "CompleteBlocks",
+                                                 "IncompleteBlocks",
+                                                 "yearInLoc",
+                                                 "trialInLocYr",
+                                                 "repInTrial","blockInRep"))
+```
+
+## corrigindo nomenclatura de sinonimos
+```{r}
+#clones <- levels(as.factor(dbdata$germplasmName))
+#write.table(clones,file = "ClonesTP_C3-2021.txt",sep = " ")
+dbdata$germplasmName <- as.factor(dbdata$germplasmName)
+dbdata$germplasmName <-  revalue(dbdata$germplasmName,                                                                   c("Conquista-2"="11-Conquista-2",
+                                     "BGM-0249(A.Marag)"="BGM-0249",
+                                     "Dimmy-22"="BGM-2179",
+                                    "IAC-12"= "BGM-2192",
+                                     "Lagoao"="BGM-2204",
+                                     "Ouro Pao"="BGM-2233",
+                                    "Sacai"= "BGM-2263",
+                                     "Guela-de-Jacu"="BGM-2304",
+                                     "032-09"="BGM-2325",
+                                     "Peru Preto"="BGM-2351"))
+```
+
+# QC Trait Values
+## At this point in the pipeline, we should check the all trait values are in allowable ranges.
+```{r}
+dbdata<-dbdata %>% 
+     dplyr::mutate(DMCg=ifelse(DMCg<5 | DMCg>65,NA,DMCg),
+                    PA=ifelse(PA<0 | PA>5,NA,PA))
+```
+
+# Calculing fresh root yield (FRY and FSY)
+```{r}
+dbdata %>% 
+   dplyr::select(studyYear,studyName,studyDesign,plotWidth,plotLength,plantsPerPlot) %>% 
+     dplyr::group_by(studyYear,studyName,studyDesign,plotWidth,plotLength,plantsPerPlot) %>% 
+  count() %>%
+     mutate(plotArea=plotWidth*plotLength) %>% 
+     gt() %>% tab_options(table.font.size = pct(67))
+```
+
+```{r}
+dbdata %>% 
+     # plot area in meters squared
+     mutate(plotArea=plotWidth*plotLength) %>% 
+     ggplot(.,aes(x=plotArea,y=NOHAV, fill=studyName)) + 
+     geom_boxplot() + theme(axis.text.x = element_blank())
+```
+
+
+```{r}
+plantsPerPlot_choices<-dbdata %>% 
+    dplyr::distinct(studyYear,studyName,plotWidth,plotLength,plantsPerPlot) %>% 
+     dplyr::left_join(dbdata %>% 
+                    dplyr::group_by(studyName) %>% 
+                    dplyr::summarize(MaxNOHAV=max(NOHAV, na.rm=T),
+                                     MeaFRW=mean(FRW,na.rm=T),
+                                     MeaFSW=mean(FSW,na.rm=T),
+                                     MeaDMCg=mean(DMCg,na.rm=T))) %>% 
+          # plot area in meters squared
+     dplyr::mutate(plotArea=plotWidth*plotLength,
+            # Number of plants per plot
+            plantsPerPlot=MaxNOHAV) %>% 
+            #plantsPerPlot=ifelse(studyName=="19.GS.C2.UYT.36.setA.UB",20,plantsPerPlot)) 
+  # exclude the empty genetic gain trial
+     # filter(studyName!="BR.AYTGS.20.Ala") %>% 
+     dplyr::select(studyName,plotArea,plantsPerPlot,MeaFRW,MeaFSW,MeaDMCg)
+
+plantsPerPlot_choices %>% gt() #%>% tab_options(table.font.size = pct(67))
+
+```
+
+```{r}
+dbdata %<>%
+     # remove the empty genetic gain trial
+     filter(studyName!=c("BR.BAG5.PT.15.Citrus")) %>% 
+     dplyr::select(-plantsPerPlot) %>% 
+     # join plantsPerPlot_choices to the trial data
+     left_join(plantsPerPlot_choices) %>% 
+     
+  # compute fresh root yield (FRY) and fresh shoot yield (FSY) in tons per hectare
+     mutate(FRY=(FRW*10)/plotArea,
+            FSY=(FSW*10)/plotArea)
+
+#> Joining, by = "studyName"
+dbdata %>% ggplot(.,aes(x=FRY,fill=studyName)) + geom_density(alpha=0.75)
+dbdata %>% ggplot(.,aes(x=FSY,fill=studyName)) + geom_density(alpha=0.75)
+```
+
+### log-transform yield traits: this is a habit based on experience. Linear mixed-models should have normally distributed homoskedastic residuals, if they don’t log-transform the response variable often helps. For FYLD and related traits, I always log-transform.
+```{r}
+# I log transform yield traits 
+# to satisfy homoskedastic residuals assumption 
+# of linear mixed models
+dbdata %<>% 
+     mutate(logFRY=log(FRY),
+            logFSY=log(FSY),
+            PropNOHAV=NOHAV/plantsPerPlot) 
+# remove non transformed / per-plot (instead of per area) traits
+dbdata %<>% dplyr::select(-FRW,-FSW,-DMCo)
+dbdata %>% ggplot(.,aes(x=logFRY,fill=studyName)) + geom_density(alpha=0.75)
+dbdata %>% ggplot(.,aes(x=logFSY,fill=studyName)) + geom_density(alpha=0.75)
+dbdata %>% ggplot(.,aes(x=DMCg,fill=studyName)) + geom_density(alpha=0.75)
+dbdata %>% ggplot(.,aes(x=StC,fill=studyName)) + geom_density(alpha=0.75)
+dbdata %>% ggplot(.,aes(x=PA,fill=studyName)) + geom_density(alpha=0.75)
+dbdata %>% ggplot(.,aes(x=CWLSD,fill=studyName)) + geom_density(alpha=0.75)
+dbdata %>% ggplot(.,aes(x=CBroLS,fill=studyName)) + geom_density(alpha=0.75)
+dbdata %>% ggplot(.,aes(x=CBliLS,fill=studyName)) + geom_density(alpha=0.75)
+```
+
+
+## Save “cleaned” phenotypes
+```{r}
+saveRDS(dbdata,file=here::here("output","phenotypes_cleaned.rds"))
+```
