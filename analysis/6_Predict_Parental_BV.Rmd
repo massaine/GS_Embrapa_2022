@@ -51,19 +51,19 @@ blups$TrainingData[[i]] <- blups$TrainingData[[i]][order(blups$TrainingData[[i]]
 dosages<-readRDS(here::here("data","dosages.rds"))
 
 # SELECTION INDEX
-SIwts<-c(DMCg=15, logFYLD=20, logDYLD=20, PA=10, StC=10)
+SIwts<-c(DMCg=20, logFSY=5, logFRY=40, PA=5, StC=10)
 
 ```
 
 ## Get marker effects
 ```{r}
 #gpreds_withMarkEffs<-runGenomicPredictions(modelType = "A", 
-#                                           selInd = NULL,
+#                                          selInd = T, SIwts = SIwts,
 #                                           getMarkEffs = TRUE,
 #                                           dosages = dosages,
 #                                           blups = blups, 
 #                                           grms = grms,
-#                                           ncores=1) 
+#                                           ncores=3) 
 ```
 
 ## Save the results
@@ -146,54 +146,55 @@ crossPreds<-predictCrosses(modelType="A",
                            haploMat=haploMat,
                            dosages = dosages[top300parents,],
                            recombFreqMat=recombFreqMat,
-                           ncores=3)
+                           ncores=2)
 elapsed<-proc.time()[3]-starttime; elapsed/60
 ```
 
 ## Save Results
 ```{r}
-saveRDS(crossPreds,file = here::here("output","predictedCrosses.rds"))
+#saveRDS(crossPreds,file = here::here("output","predictedCrosses.rds"))
 ```
 
 ## Select crosses to make
 ```{r}
 crossPreds<-readRDS(here::here("output","predictedCrosses.rds"))
 crossPreds
-
 crossPreds$tidyPreds[[1]] %>% str
 
 ```
 
 ```{r}
-top10crosses<-crossPreds$tidyPreds[[1]] %>% 
-   #  filter(Trait=="SELIND") %>% 
+top10crosses<-crossPreds$tidyPreds[[1]] %>%     # exemplo
+     #filter(Trait=="SELIND") %>% 
      dplyr::select(-predVar) %>% 
      arrange(desc(predUsefulness)) %>% 
      slice(1:10)
 top10crosses
-#> # A tibble: 10 × 8
-#>    sireID     damID    Nsegsnps predOf Trait predMean predSD
-#>    <chr>      <chr>       <int> <chr>  <chr>    <dbl>  <dbl>
-#>  1 TMS14F103… TMS14F1…     1429 BV     SELI…     16.3   3.08
-#>  2 TMS13F130… TMS14F1…     2048 BV     SELI…     16.4   2.85
-#>  3 TMS13F130… TMS13F1…     1281 BV     SELI…     16.5   2.59
-#>  4 TMS14F103… TMS14F1…     2099 BV     SELI…     15.2   2.87
-#>  5 TMS13F130… TMS14F1…     1762 BV     SELI…     15.3   2.62
-#>  6 TMS14F103… TMS19F1…     2013 BV     SELI…     14.3   2.86
-#>  7 TMS14F103… TMS14F1…     2260 BV     SELI…     14.2   2.83
-#>  8 TMS13F130… TMS19F1…     1934 BV     SELI…     14.4   2.60
-#>  9 TMS13F130… TMS14F1…     2136 BV     SELI…     14.3   2.57
-#> 10 TMS14F126… TMS14F1…     1118 BV     SELI…     14.1   2.65
-#> # … with 1 more variable: predUsefulness <dbl>
+
+Ef.crosses1<-crossPreds$tidyPreds[[1]] %>% 
+     filter(Trait=="DMCg")  
+Ef.crosses2<-crossPreds$tidyPreds[[1]] %>% 
+     filter(Trait=="logFSY")
+Ef.crosses3<-crossPreds$tidyPreds[[1]] %>% 
+     filter(Trait=="logFRY")
+Ef.crosses4<-crossPreds$tidyPreds[[1]] %>% 
+     filter(Trait=="PA")
+Ef.crosses5<-crossPreds$tidyPreds[[1]] %>% 
+     filter(Trait=="StC")
+
+table(Ef.crosses1$damID == Ef.crosses2$damID)
+table(Ef.crosses1$sireID == Ef.crosses2$sireID)
+Ef.crosses <- cbind(Ef.crosses1[,c(1,2,9)],Ef.crosses2[,9],Ef.crosses3[,9],Ef.crosses4[,9],Ef.crosses5[,9])
+colnames(Ef.crosses)[3:7]<- c("DMCg.UC","logFSY.UC","logFRY.UC","PA.UC","StC.UC")
+
+
 ```
 
 ### editar
 ```{r}
 library(data.table)
-GEBVs_GS <- gpreds$gblups[[1]] %>% filter(GID %like% "BR-21GS")
+write.table(crossPreds$tidyPreds[[1]],file = here::here("output","crossPreds.csv"),sep=",",quote = FALSE)
+write.table(Ef.crosses,file = here::here("output","UC_crosses.csv"),sep=",",quote = FALSE)
 
-write.table(GEBVs_GS,file = here::here("output","Clones_21GS-C3_GEBVs_2022.csv"),sep=",",quote = FALSE)
-write.table(gpreds$gblups[[1]],file = here::here("output","All_Clones_GEBVs_2022.csv"),sep=",",quote = FALSE)
 
-Clone_21GS-C3_GEBVs_2022
 ```

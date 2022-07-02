@@ -1,0 +1,209 @@
+---
+title: "7_Predict_Parental_BV_Dom"
+author: "massaine"
+date: "2022-07-01"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+## Nao foi analisado (Erro na funcao runGenomicPredictions())
+
+## Predict Parental Breeding Value
+```{r}
+library(genomicMateSelectR)
+
+# GENOMIC RELATIONSHIP MATRIX
+grms<-list(D=readRDS(file=here::here("output","GDommatrixGBSandDArTGS.rds")))
+
+blups<-readRDS(here::here("output","DRGBlupsGS.rds"))
+blups %>% dplyr::select(Trait, fitAS) %>% unnest(fitAS)
+blups <- blups[-c(4,6,8),]
+
+blups1<-readRDS(here::here("output","DRGBlupsDisGS.rds"))
+blups1 %>% dplyr::select(Trait, fitAS) %>% unnest(fitAS)
+blups <- rbind(blups,blups1)
+
+for (i in 1:nrow(blups)) {
+blups$fitAS[[i]]$blups[[1]] <- blups$fitAS[[i]]$blups[[1]] %>% dplyr::rename(germplasmName = GID)
+}
+
+
+# BLUPs
+blups %<>% dplyr::select(Trait,fitAS) %>% unnest(fitAS) %>% dplyr::select(Trait,blups) %>% 
+     # based on cross-validation, decided to exclude diseases traits from this analysis
+     filter(Trait != "Anthractnose") %>% filter(Trait != "ManchaBranca") %>% 
+     filter(Trait != "ManchaParda") %>% filter(Trait != "QueimaFolhas") %>% 
+     # need to rename the "blups" list to comply with the runCrossVal function
+     dplyr::rename(TrainingData=blups) %>% 
+     dplyr::select(Trait,TrainingData) %>% 
+     # need also to remove phenotyped-but-not-genotyped lines
+     dplyr::mutate(TrainingData=map(TrainingData,
+                             ~filter(.,germplasmName %in% rownames(grms$D)) %>% 
+                                  # rename the germplasmName column to GID
+                                  dplyr::rename(GID=germplasmName)))
+
+for(i in 1:nrow(blups)){
+blups$TrainingData[[i]] <- blups$TrainingData[[i]][order(blups$TrainingData[[i]]$GID),]
+}
+dir(here::here("output"))
+
+# DOSAGE MATRIX
+## Dosages are also needed for runGenomicPredictions() when getMarkEffs=TRUE
+## Reason is that they are used to extra SNP effects from GBLUP models
+dosages<-readRDS(here::here("data","dosages.rds"))
+
+# SELECTION INDEX
+SIwts<-c(DMCg=20, logFSY=5, logFRY=40, PA=5, StC=10)
+
+```
+
+## Get marker effects
+```{r}
+D<-kinship(dosages,type = "domClassic")
+dim(D)
+grms[["D"]]<-D
+blups$TrainingData[[1]]$GID
+
+gpreds_withMarkEffs.D<-runGenomicPredictions(modelType = "AD", 
+                                           #selInd = T, SIwts = SIwts,
+                                           getMarkEffs = TRUE,
+                                           dosages = dosages,
+                                           blups = blups, 
+                                           grms = grms,
+                                           ncores=3) 
+
+```
+
+## Save the results
+```{r}
+saveRDS(gpreds_withMarkEffs.D,file = here::here("output","genomicPredictions_withMarkEffs.rds"))
+```
+
+```{r}
+gpreds_withMarkEffs<-readRDS(here::here("output","genomicPredictions_withMarkEffs.rds"))
+```
+
+###
+```{r}
+
+xx <- as.matrix(gpreds_withMarkEffs$gblups[[1]][,3:7])
+rownames(xx) <- as.matrix(gpreds_withMarkEffs$gblups[[1]][,1])
+Z1 <- dosages[rownames(dosages) %in% rownames(xx),]
+Z1 <-Z1[rownames(xx),]
+cbind(rownames(Z1), rownames(xx))
+table(rownames(xx) == rownames(Z1))
+
+
+
+#markeff <- backsolveSNPeff(Z=Z1 ,g=xx)
+#saveRDS(markeff,file = here::here("output","markeff.rds"))
+markeff<-readRDS(here::here("output","markeff.rds"))
+
+for (i in 1:5) {
+  gpreds_withMarkEffs$genomicPredOut[[1]]$allelesubsnpeff[[i]] <- as.matrix(markeff[,i])
+}
+gpreds_withMarkEffs$genomicPredOut[[1]]
+
+
+```
+
+
+```{r}
+gpreds_withMarkEffs$genomicPredOut[[1]]$allelesubsnpeff[[1]][1:5,]
+```
+
+## Crosses-to-predict (paramos)
+```{r}
+top300parents<-read.table(here::here("data","top300.txt"),header = T)
+top300parents <- top300parents[1:200,]
+
+table(rownames(Z1) %in% top300parents)
+top300parents <- top300parents[,2]
+CrossesToPredict<-crosses2predict(top300parents)
+
+CrossesToPredict %>% head
+
+CrossesToPredict %>% nrow()
+
+```
+
+## Run predictCrosses()
+```{r}
+# HAPLOTYPE MATRIX
+## keep only haplos for candidate parents we want to predict crosses for
+## those which will be used in prediction, saves memory
+haploMat<-readRDS(file=here::here("output","haplotypes.rds"))
+
+parenthaps<-as.vector(sort(c(paste0(top300parents,"_HapA"),
+                   paste0(top300parents,"_HapB"))))
+haploMat <- haploMat[rownames(haploMat) %in% parenthaps,]
+table(rownames(haploMat) %in% parenthaps)
+haploMat<-haploMat[parenthaps,]
+haploMat[1:10,1:10]
+
+# RECOMBINATION FREQUENCY MATRIX
+recombFreqMat<-readRDS(file=here::here("output","recombFreqMat_1minus2c.rds"))
+```
+
+
+```{r}
+starttime<-proc.time()[3]
+#crossPreds<-predictCrosses(modelType="A",
+#                           selInd = F, SIwts = NULL,
+#                           CrossesToPredict=CrossesToPredict,
+#                           snpeffs=gpreds_withMarkEffs$genomicPredOut[[1]], 
+#                           haploMat=haploMat,
+#                           dosages = dosages[top300parents,],
+#                           recombFreqMat=recombFreqMat,
+#                           ncores=2)
+#elapsed<-proc.time()[3]-starttime; elapsed/60
+```
+
+## Save Results
+```{r}
+#saveRDS(crossPreds,file = here::here("output","predictedCrosses.rds"))
+```
+
+## Select crosses to make
+```{r}
+crossPreds<-readRDS(here::here("output","predictedCrosses.rds"))
+crossPreds
+crossPreds$tidyPreds[[1]] %>% str
+
+```
+
+```{r}
+top10crosses<-crossPreds$tidyPreds[[1]] %>%     # exemplo
+   #  filter(Trait=="SELIND") %>% 
+     dplyr::select(-predVar) %>% 
+     arrange(desc(predUsefulness)) %>% 
+     slice(1:10)
+top10crosses
+
+Ef.crosses1<-crossPreds$tidyPreds[[1]] %>% 
+     filter(Trait=="DMCg")  
+Ef.crosses2<-crossPreds$tidyPreds[[1]] %>% 
+     filter(Trait=="logFSY")
+Ef.crosses3<-crossPreds$tidyPreds[[1]] %>% 
+     filter(Trait=="logFRY")
+Ef.crosses4<-crossPreds$tidyPreds[[1]] %>% 
+     filter(Trait=="PA")
+Ef.crosses5<-crossPreds$tidyPreds[[1]] %>% 
+     filter(Trait=="StC")
+
+table(Ef.crosses1$sireID == Ef.crosses2$sireID)
+Ef.crosses <- cbind(Ef.crosses1[,c(1,2,9)],Ef.crosses2[,9],Ef.crosses3[,9],Ef.crosses4[,9],Ef.crosses5[,9])
+colnames(Ef.crosses)[3:7]<- c("DMCg.UC","logFSY.UC","logFRY.UC","PA.UC","StC.UC")
+
+
+```
+
+### editar
+```{r}
+library(data.table)
+write.table(crossPreds$tidyPreds[[1]],file = here::here("output","crossPreds.csv"),sep=",",quote = FALSE)
+write.table(Ef.crosses,file = here::here("output","UC_crosses.csv"),sep=",",quote = FALSE)
+
+
+```
